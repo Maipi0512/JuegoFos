@@ -162,8 +162,21 @@ function getName() {
   store.set('fosforos.name', n);
   return n;
 }
+// si el servidor no responde (por ejemplo, Render despertándose), avisamos en vez de quedarnos callados
+function request(event, data, cb) {
+  homeError(socket.connected ? '' : 'Conectando con el servidor… (si estaba dormido puede tardar hasta un minuto)');
+  socket.timeout(60_000).emit(event, data, (err, res) => {
+    if (err) return homeError('No se pudo conectar con el servidor. Revisá tu conexión y recargá la página.');
+    cb(res);
+  });
+}
 function onJoined(res) {
-  if (res?.error) return homeError(res.error);
+  if (res?.error) {
+    homeError(res.error === 'No existe una sala con ese código'
+      ? 'No existe una sala con ese código en este servidor. ¿La crearon en otro link, o se reinició el servidor?'
+      : res.error);
+    return;
+  }
   homeError('');
   session.set('fosforos.room', res.code);
   history.replaceState(null, '', `?sala=${res.code}`);
@@ -171,20 +184,20 @@ function onJoined(res) {
 }
 function createRoom() {
   const name = getName();
-  if (name) socket.emit('create', { name, playerId: myId, hostPlays: false }, onJoined);
+  if (name) request('create', { name, playerId: myId, hostPlays: false }, onJoined);
 }
 function joinRoom() {
   const name = getName();
   if (!name) return;
   const code = codeInput.value.trim();
   if (code.length !== 4) { homeError('El código tiene 4 caracteres'); codeInput.focus(); return; }
-  socket.emit('join', { code, name, playerId: myId }, onJoined);
+  request('join', { code, name, playerId: myId }, onJoined);
 }
 $('#createBtn').addEventListener('click', createRoom);
 $('#joinBtn').addEventListener('click', joinRoom);
 $('#botsBtn').addEventListener('click', () => {
   const name = getName();
-  if (name) socket.emit('create', { name, playerId: myId, hostPlays: true, bots: 5 }, onJoined);
+  if (name) request('create', { name, playerId: myId, hostPlays: true, bots: 5 }, onJoined);
 });
 $('#addBotBtn').addEventListener('click', () => socket.emit('addBot', 1));
 codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinRoom(); });
