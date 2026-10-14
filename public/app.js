@@ -32,7 +32,7 @@ const P = (id) => room?.players.find((p) => p.id === id);
 const nameOf = (id) => P(id)?.name ?? '—';
 const now = () => Date.now() + clockOffset;
 const avatar = (p, cls = '') => (p
-  ? `<span class="avatar ${cls}" style="--c:${p.color}">${esc(p.name[0].toUpperCase())}</span>`
+  ? `<span class="avatar ${cls}" style="--c:${p.color}">${p.isBot ? '🤖' : esc(p.name[0].toUpperCase())}</span>`
   : `<span class="avatar ghost ${cls}">?</span>`);
 
 function show(id) {
@@ -175,6 +175,15 @@ function joinRoom() {
 }
 $('#createBtn').addEventListener('click', createRoom);
 $('#joinBtn').addEventListener('click', joinRoom);
+$('#botsBtn').addEventListener('click', () => {
+  const name = getName();
+  if (!name) return;
+  socket.emit('create', { name, playerId: myId }, (res) => {
+    onJoined(res);
+    if (res?.ok) socket.emit('addBot', 3);
+  });
+});
+$('#addBotBtn').addEventListener('click', () => socket.emit('addBot', 1));
 codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinRoom(); });
 nameInput.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
@@ -245,7 +254,7 @@ function announce(prev, s) {
   }
   for (const p of s.players) {
     const old = prev.players.find((x) => x.id === p.id);
-    if (!old && p.id !== myId) toast(`${p.name} entró a la sala`);
+    if (!old && p.id !== myId && !p.isBot) toast(`${p.name} entró a la sala`);
   }
 }
 
@@ -292,11 +301,13 @@ function renderLobby() {
       ${avatar(p)}
       <span class="pname">${esc(p.name)}${p.id === myId ? ' <em>(vos)</em>' : ''}</span>
       ${p.id === room.hostId ? '<span title="Anfitrión">👑</span>' : ''}
+      ${p.isBot ? '<span class="tag">bot</span>' : ''}
       ${p.online ? '' : '<span class="tag">desconectado</span>'}
       ${isHost && p.id !== myId ? `<button class="kick" data-kick="${esc(p.id)}" title="Sacar de la sala">✕</button>` : ''}
     </li>`).join('');
   renderSettings(isHost);
   const online = room.players.filter((p) => p.online).length;
+  $('#addBotBtn').hidden = !isHost;
   const startBtn = $('#startBtn');
   startBtn.hidden = !isHost;
   startBtn.disabled = online < 2;

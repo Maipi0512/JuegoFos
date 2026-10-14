@@ -27,6 +27,7 @@
         <input id="nameInput" maxlength="18" placeholder="¿Cómo te llamamos?" autocomplete="off">
       </label>
       <button id="createBtn" class="btn primary big">Crear sala</button>
+      <button id="botsBtn" class="btn big">🤖 Jugar con bots</button>
       <div class="divider"><span>o unite a una sala</span></div>
       <div class="join-row">
         <input id="codeInput" maxlength="4" placeholder="CÓDIGO" autocomplete="off" spellcheck="false">
@@ -63,7 +64,10 @@
       </div>
 
       <div class="card players-card">
-        <h2>Jugadores <span id="playerCount" class="pill"></span></h2>
+        <div class="players-head">
+          <h2>Jugadores <span id="playerCount" class="pill"></span></h2>
+          <button id="addBotBtn" class="btn small">🤖 Agregar bot</button>
+        </div>
         <ul id="playerList" class="player-list"></ul>
       </div>
 

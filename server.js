@@ -12,6 +12,7 @@ const MATCH_GRACE_MS = 30_000;   // si te desconectás en plena partida y no vol
 const NEXT_ROUND_MS = 5_000;     // pausa entre rondas
 const EMPTY_ROOM_MS = 10 * 60_000;
 const MAX_PLAYERS = 32;
+const BOT_NAMES = ['Chispa', 'Mecha', 'Llamita', 'Brasa', 'Cerilla', 'Fogata', 'Yesca', 'Tizón', 'Pólvora', 'Bengala'];
 const COLORS = ['#ff6b6b', '#ffa94d', '#ffd43b', '#69db7c', '#38d9a9', '#4dabf7',
   '#748ffc', '#da77f2', '#f783ac', '#a9e34b', '#63e6be', '#e599f7'];
 
@@ -79,7 +80,7 @@ function publicRoom(r) {
     settings: r.settings,
     players: [...r.players.values()].map((p) => ({
       id: p.id, name: p.name, color: p.color, online: p.online,
-      eliminated: p.eliminated, spectator: p.spectator, left: p.left, wins: p.wins,
+      eliminated: p.eliminated, spectator: p.spectator, left: p.left, wins: p.wins, isBot: p.isBot,
     })),
     rounds: r.rounds,
     currentRound: r.currentRound,
@@ -100,8 +101,26 @@ function addPlayer(r, id, name) {
   r.players.set(id, p);
   return p;
 }
+function addBot(r) {
+  const used = new Set([...r.players.values()].map((p) => p.name.toLowerCase()));
+  const free = BOT_NAMES.filter((n) => !used.has(`🤖 ${n}`.toLowerCase()));
+  const name = `🤖 ${free.length ? free[crypto.randomInt(free.length)] : `Bot ${r.players.size + 1}`}`;
+  const p = addPlayer(r, `bot-${crypto.randomUUID()}`, name);
+  p.isBot = true;
+  return p;
+}
+const hasHumansOnline = (r) => [...r.players.values()].some((p) => p.online && !p.isBot);
+
+// Juega casi siempre perfecto (dejar al rival con n ≡ 1 mod (k+1)), pero a veces se equivoca para que se le pueda ganar.
+function botMove(r, m) {
+  const k = r.settings.maxTake;
+  const best = (m.sticks - 1) % (k + 1);
+  if (best > 0 && crypto.randomInt(100) < 75) return best;
+  return 1 + crypto.randomInt(Math.min(k, m.sticks));
+}
+
 function reassignHost(r) {
-  const next = [...r.players.values()].find((p) => p.online && !p.left);
+  const next = [...r.players.values()].find((p) => p.online && !p.left && !p.isBot);
   if (next) r.hostId = next.id;
 }
 function activeMatchOf(r, pid) {
@@ -151,6 +170,9 @@ function startRound(r, ids) {
 }
 
 function scheduleTurn(r, m) {
+  if (r.players.get(m.turn)?.isBot) {
+    setTimer(`bot:${r.code}:${m.id}`, 900 + crypto.randomInt(1200), () => applyTake(r, m, m.turn, botMove(r, m)));
+  }
   const secs = r.settings.turnSeconds;
   const key = `turn:${r.code}:${m.id}`;
   if (!secs) { m.turnDeadline = null; clearTimer(key); return; }
@@ -279,7 +301,7 @@ io.on('connection', (socket) => {
         });
       }
     }
-    if (![...r.players.values()].some((x) => x.online)) {
+    if (!hasHumansOnline(r)) {
       setTimer(`room:${r.code}`, EMPTY_ROOM_MS, () => { clearRoomTimers(r.code, true); rooms.delete(r.code); });
     }
     broadcast(r);
@@ -339,6 +361,13 @@ io.on('connection', (socket) => {
       maxTake: clamp(Number(s.maxTake), 2, 4, cur.maxTake),
       turnSeconds: turnOptions.includes(Number(s.turnSeconds)) ? Number(s.turnSeconds) : cur.turnSeconds,
     };
+    broadcast(room);
+  });
+
+  socket.on('addBot', (count) => {
+    if (!isHost() || room.state !== 'lobby') return;
+    const n = clamp(Number(count), 1, 8, 1);
+    for (let i = 0; i < n && room.players.size < MAX_PLAYERS; i++) addBot(room);
     broadcast(room);
   });
 
