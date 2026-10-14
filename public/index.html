@@ -18,7 +18,7 @@
     <div class="hero">
       <div class="logo" aria-hidden="true"><i class="stick lit"></i></div>
       <h1>Fósforos</h1>
-      <p class="tagline">El que se queda con el último, <b>pierde</b>.</p>
+      <p class="tagline">El que se queda con el último, <b>pierde</b>… y se suma al equipo que le ganó.</p>
     </div>
 
     <div class="card home-card">
@@ -26,12 +26,12 @@
         <span>Tu nombre</span>
         <input id="nameInput" maxlength="18" placeholder="¿Cómo te llamamos?" autocomplete="off">
       </label>
-      <button id="createBtn" class="btn primary big">Crear sala</button>
+      <button id="createBtn" class="btn primary big">Crear torneo</button>
       <button id="botsBtn" class="btn big">🤖 Jugar con bots</button>
-      <div class="divider"><span>o unite a una sala</span></div>
+      <div class="divider"><span>o inscribite en un torneo</span></div>
       <div class="join-row">
         <input id="codeInput" maxlength="4" placeholder="CÓDIGO" autocomplete="off" spellcheck="false">
-        <button id="joinBtn" class="btn">Unirme</button>
+        <button id="joinBtn" class="btn">Inscribirme</button>
       </div>
       <p id="homeError" class="error" role="alert"></p>
     </div>
@@ -39,10 +39,13 @@
     <details class="card rules">
       <summary>¿Cómo se juega?</summary>
       <ol>
-        <li>Las partidas son de a dos y por turnos.</li>
-        <li>En tu turno sacás <b>1 o 2</b> fósforos (el anfitrión puede cambiar el máximo).</li>
-        <li>El que saca el <b>último fósforo pierde</b> y queda eliminado del torneo.</li>
-        <li>Los ganadores avanzan de ronda hasta la final. Si quedan impares, alguien pasa directo.</li>
+        <li>Quien crea el torneo lo organiza; los demás se inscriben con su nombre. Una vez iniciado, no se inscribe nadie más.</li>
+        <li>Cada partida es de a dos equipos, por turnos. El que saca el <b>último fósforo pierde</b>.</li>
+        <li>Cuando un equipo pierde <b>no queda afuera</b>: se suma al equipo que le ganó.</li>
+        <li>En un equipo de varios, cada integrante <b>vota</b> cuántos sacar (20 segundos) y se juega lo que vota la mayoría. Si hay empate, decide la máquina con MIN-MAX.</li>
+        <li>Cada ronda sortea cuántos fósforos hay y cuántos se pueden sacar por turno.</li>
+        <li>Empieza el equipo con menos integrantes. Si sobra un equipo, juega contra la máquina.</li>
+        <li>Se sigue ronda tras ronda hasta la final entre los dos últimos equipos.</li>
       </ol>
     </details>
     <div class="home-audio"></div>
@@ -65,16 +68,16 @@
 
       <div class="card players-card">
         <div class="players-head">
-          <h2>Jugadores <span id="playerCount" class="pill"></span></h2>
+          <h2>Inscriptos <span id="playerCount" class="pill"></span></h2>
           <button id="addBotBtn" class="btn small">🤖 Agregar bot</button>
         </div>
         <ul id="playerList" class="player-list"></ul>
       </div>
 
       <div class="card settings-card">
-        <h2>Reglas de la sala</h2>
+        <h2>Reglas del torneo</h2>
         <div id="settings"></div>
-        <button id="startBtn" class="btn primary big">Empezar torneo</button>
+        <button id="startBtn" class="btn primary big">Iniciar torneo</button>
         <p id="startHint" class="muted center"></p>
       </div>
     </div>
@@ -89,6 +92,7 @@
         <div id="roundSub" class="muted small-text"></div>
       </div>
       <div class="audio-ctrls">
+        <button id="projBtn" class="btn ghost small" hidden>📽️ Proyector</button>
         <button id="restartBtn" class="btn ghost small" hidden>Reiniciar</button>
       </div>
     </header>
@@ -103,9 +107,15 @@
       </aside>
     </div>
 
-    <div class="card bracket-card">
-      <h2>Llave del torneo</h2>
-      <div id="bracket" class="bracket"></div>
+    <div class="info-grid">
+      <div class="card">
+        <h2>Equipos <span id="teamCount" class="pill"></span></h2>
+        <div id="teams" class="teams"></div>
+      </div>
+      <div class="card">
+        <h2>Historial</h2>
+        <div id="history" class="history"></div>
+      </div>
     </div>
   </section>
 
@@ -113,12 +123,12 @@
   <div id="champion" class="overlay hidden">
     <div class="champ-box">
       <div class="trophy">🏆</div>
-      <div id="champAvatar"></div>
       <h2 id="champName"></h2>
       <p id="champSub" class="muted"></p>
+      <div id="champMembers" class="champ-members"></div>
       <div class="champ-actions">
         <button id="againBtn" class="btn primary">Jugar otra vez</button>
-        <button id="viewBracketBtn" class="btn">Ver llave</button>
+        <button id="viewBracketBtn" class="btn">Ver resultados</button>
         <button class="btn ghost" data-leave>Salir</button>
       </div>
       <p id="champHint" class="muted small-text"></p>

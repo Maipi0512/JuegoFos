@@ -141,6 +141,10 @@ document.addEventListener('click', (e) => {
 });
 
 // ---------------- inicio ----------------
+const MACHINE = 'MAQUINA';
+const VOTE_MS = 20_000;
+let projector = false;
+
 const nameInput = $('#nameInput');
 const codeInput = $('#codeInput');
 nameInput.value = store.get('fosforos.name') || '';
@@ -161,10 +165,11 @@ function onJoined(res) {
   homeError('');
   session.set('fosforos.room', res.code);
   history.replaceState(null, '', `?sala=${res.code}`);
+  if (res.spectator) toast('El torneo ya empezó: no se puede inscribir nadie más, pero podés mirar 👀');
 }
 function createRoom() {
   const name = getName();
-  if (name) socket.emit('create', { name, playerId: myId }, onJoined);
+  if (name) socket.emit('create', { name, playerId: myId, hostPlays: false }, onJoined);
 }
 function joinRoom() {
   const name = getName();
@@ -177,11 +182,7 @@ $('#createBtn').addEventListener('click', createRoom);
 $('#joinBtn').addEventListener('click', joinRoom);
 $('#botsBtn').addEventListener('click', () => {
   const name = getName();
-  if (!name) return;
-  socket.emit('create', { name, playerId: myId }, (res) => {
-    onJoined(res);
-    if (res?.ok) socket.emit('addBot', 3);
-  });
+  if (name) socket.emit('create', { name, playerId: myId, hostPlays: true, bots: 5 }, onJoined);
 });
 $('#addBotBtn').addEventListener('click', () => socket.emit('addBot', 1));
 codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinRoom(); });
@@ -195,15 +196,15 @@ function leave() {
   session.del('fosforos.room');
   room = null;
   focusId = null;
+  projector = false;
   views.clear();
   history.replaceState(null, '', location.pathname);
   render();
 }
 document.addEventListener('click', (e) => {
   if (!e.target.closest('[data-leave]')) return;
-  const me = P(myId);
-  if (room?.state === 'playing' && me && !me.eliminated && !me.spectator
-    && !confirm('Si salís ahora quedás eliminado del torneo. ¿Salir igual?')) return;
+  if (room?.state === 'playing' && P(myId)?.teamId
+    && !confirm('Si salís, tu equipo sigue jugando sin vos. ¿Salir igual?')) return;
   leave();
 });
 
@@ -216,7 +217,7 @@ socket.on('connect', () => {
       session.del('fosforos.room');
       room = null;
       render();
-      if (res.error) toast(res.error, 'err');
+      toast(res.error, 'err');
     }
   });
 });
@@ -232,7 +233,7 @@ socket.on('kicked', () => {
   session.del('fosforos.room');
   room = null;
   render();
-  toast('El anfitrión te sacó de la sala', 'err');
+  toast('Quien organiza te sacó de la sala', 'err');
 });
 socket.on('replaced', () => {
   session.del('fosforos.room');
@@ -241,20 +242,42 @@ socket.on('replaced', () => {
   toast('Abriste esta sala en otra pestaña', 'err');
 });
 
+// ---------------- ayudas ----------------
+const teamName = (captainId) => `Equipo de ${nameOf(captainId)}`;
+const sideName = (m, side) => (side === MACHINE ? '🤖 La máquina' : teamName(m.info[side].captainId));
+const inSide = (m, side, pid) => side !== MACHINE && m.info[side].members.includes(pid);
+const mySide = (m) => (inSide(m, m.a, myId) ? m.a : inSide(m, m.b, myId) ? m.b : null);
+const currentRound = () => room.rounds[room.currentRound];
+const roundMatches = () => currentRound()?.matches ?? [];
+const myMatch = () => roundMatches().find((m) => mySide(m));
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+function roundLabel(r, s = room) {
+  return s.rounds[r]?.isFinal ? 'Final' : `Ronda ${r + 1}`;
+}
+function stack(ids, max, cls) {
+  const ps = ids.map(P).filter(Boolean);
+  const extra = ps.length - max;
+  return `<span class="stack ${cls}">${ps.slice(0, max).map((p) => avatar(p, cls)).join('')}${extra > 0 ? `<span class="avatar ${cls} more">+${extra}</span>` : ''}</span>`;
+}
+function tallyText(tally) {
+  return Object.entries(tally || {}).sort((x, y) => y[1] - x[1])
+    .map(([n, c]) => `${plural(c, 'voto', 'votos')} a ${n}`).join(' · ');
+}
+
 // avisos cuando cambia algo relevante para mí
 function announce(prev, s) {
   if (prev.state === 'lobby' && s.state === 'playing') toast('¡Arranca el torneo! 🔥');
   if (prev.state === 'playing' && s.state === 'playing' && s.currentRound > prev.currentRound) {
-    toast(`Empieza ${roundName(s.currentRound, s)}`);
+    const r = s.rounds[s.currentRound];
+    toast(`${roundLabel(s.currentRound, s)}: ${r.sticks} fósforos, se saca de 1 a ${r.maxTake}`);
   }
-  const before = prev.rounds[prev.currentRound]?.find((m) => m.p1 === myId || m.p2 === myId);
-  const after = s.rounds[s.currentRound]?.find((m) => m.id === before?.id);
+  const before = prev.rounds[prev.currentRound]?.matches.find((m) => mySide(m));
+  const after = s.rounds[s.currentRound]?.matches.find((m) => m.id === before?.id);
   if (before?.status === 'playing' && after?.status === 'done') {
-    if (after.winner === myId) sfxWin(); else sfxLose();
+    if (after.winner === mySide(after)) sfxWin(); else sfxLose();
   }
   for (const p of s.players) {
-    const old = prev.players.find((x) => x.id === p.id);
-    if (!old && p.id !== myId && !p.isBot) toast(`${p.name} entró a la sala`);
+    if (!prev.players.some((x) => x.id === p.id) && p.id !== myId && !p.isBot) toast(`${p.name} se inscribió`);
   }
 }
 
@@ -278,80 +301,59 @@ function render() {
   }
 }
 
-function roundsFor(n) { let t = 0; while (n > 1) { n = Math.ceil(n / 2); t++; } return t; }
-function roundName(r, s = room) {
-  const left = s.totalRounds - r;
-  if (left === 1) return 'la Final';
-  if (left === 2) return 'la Semifinal';
-  if (left === 3) return 'los Cuartos de final';
-  return `la Ronda ${r + 1}`;
+// ----- sala de inscripción -----
+function participants() {
+  return room.players.filter((p) => p.online && (p.id !== room.hostId || room.settings.hostPlays));
 }
-const roundLabel = (r) => {
-  const n = roundName(r).replace(/^(la|los) /, '');
-  return n.charAt(0).toUpperCase() + n.slice(1);
-};
 
-// ----- lobby -----
 function renderLobby() {
   const isHost = room.hostId === myId;
+  const n = participants().length;
   $('#roomCode').textContent = room.code;
-  $('#playerCount').textContent = room.players.length;
-  $('#playerList').innerHTML = room.players.map((p) => `
+  $('#playerCount').textContent = n;
+  $('#playerList').innerHTML = room.players.map((p) => {
+    const organizer = p.id === room.hostId;
+    return `
     <li class="player ${p.online ? '' : 'offline'}">
       ${avatar(p)}
       <span class="pname">${esc(p.name)}${p.id === myId ? ' <em>(vos)</em>' : ''}</span>
-      ${p.id === room.hostId ? '<span title="Anfitrión">👑</span>' : ''}
+      ${organizer ? `<span class="tag">${room.settings.hostPlays ? '👑 organiza y juega' : '👑 organiza'}</span>` : ''}
       ${p.isBot ? '<span class="tag">bot</span>' : ''}
       ${p.online ? '' : '<span class="tag">desconectado</span>'}
-      ${isHost && p.id !== myId ? `<button class="kick" data-kick="${esc(p.id)}" title="Sacar de la sala">✕</button>` : ''}
-    </li>`).join('');
+      ${isHost && !organizer ? `<button class="kick" data-kick="${esc(p.id)}" title="Sacar de la sala">✕</button>` : ''}
+    </li>`;
+  }).join('');
   renderSettings(isHost);
-  const online = room.players.filter((p) => p.online).length;
   $('#addBotBtn').hidden = !isHost;
   const startBtn = $('#startBtn');
   startBtn.hidden = !isHost;
-  startBtn.disabled = online < 2;
+  startBtn.disabled = n < 2;
   $('#startHint').textContent = isHost
-    ? (online < 2 ? 'Necesitás al menos 2 jugadores. ¡Compartí el código!' : `${online} jugadores · ${roundsFor(online)} ${roundsFor(online) === 1 ? 'ronda' : 'rondas'}`)
-    : `Esperando que ${nameOf(room.hostId)} empiece el torneo…`;
+    ? (n < 2 ? 'Hacen falta al menos 2 inscriptos. ¡Compartí el código!' : `${plural(n, 'equipo', 'equipos')} de un integrante para arrancar`)
+    : `Esperando que ${nameOf(room.hostId)} inicie el torneo…`;
 }
 
 function renderSettings(isHost) {
   const s = room.settings;
-  const dis = isHost ? '' : 'disabled';
-  const seg = (key, opts) => `<div class="seg">${opts.map(([v, label]) => `
-    <button class="${s[key] === v ? 'on' : ''}" data-set="${key}" data-val="${v}" ${dis}>${label}</button>`).join('')}</div>`;
   $('#settings').innerHTML = `
+    <ul class="rule-list">
+      <li><span>🔁</span>El que pierde no queda afuera: se suma al equipo que le ganó.</li>
+      <li><span>🗳️</span>Cada equipo vota su jugada: 20 segundos, gana la mayoría. Si empatan, decide MIN-MAX.</li>
+      <li><span>🎲</span>Cada ronda sortea los fósforos (10 a 30) y el máximo por turno (2 a 4).</li>
+      <li><span>⚖️</span>Empieza el equipo con menos integrantes; si son iguales, se sortea.</li>
+      <li><span>🤖</span>Si sobra un equipo, juega contra la máquina.</li>
+      <li><span>🏆</span>Ronda tras ronda hasta la final entre los dos últimos equipos.</li>
+    </ul>
     <div class="setting">
-      <div><b>Fósforos por partida</b><small>${s.randomSticks ? 'Cada partida arranca con 10 a 25' : 'Cantidad inicial en la mesa'}</small></div>
-      <div class="stepper">
-        <button data-set="sticks" data-delta="-1" ${isHost && !s.randomSticks && s.sticks > 5 ? '' : 'disabled'}>−</button>
-        <span>${s.randomSticks ? '🎲' : s.sticks}</span>
-        <button data-set="sticks" data-delta="1" ${isHost && !s.randomSticks && s.sticks < 40 ? '' : 'disabled'}>+</button>
-      </div>
-    </div>
-    <div class="setting">
-      <div><b>Cantidad sorpresa</b><small>Cada partida con un número al azar</small></div>
-      <button class="toggle ${s.randomSticks ? 'on' : ''}" data-toggle="randomSticks" ${dis} aria-label="Cantidad sorpresa"></button>
-    </div>
-    <div class="setting">
-      <div><b>Máximo por turno</b><small>Se puede sacar de 1 a…</small></div>
-      ${seg('maxTake', [[2, '2'], [3, '3'], [4, '4']])}
-    </div>
-    <div class="setting">
-      <div><b>Tiempo por turno</b><small>Si se acaba, se saca 1 solo</small></div>
-      ${seg('turnSeconds', [[0, '∞'], [10, '10s'], [20, '20s'], [30, '30s']])}
+      <div><b>Yo también juego</b><small>Si no, organizás y seguís todo desde la vista de proyector</small></div>
+      <button class="toggle ${s.hostPlays ? 'on' : ''}" data-toggle="hostPlays" ${isHost ? '' : 'disabled'} aria-label="Yo también juego"></button>
     </div>`;
 }
 
 $('#settings').addEventListener('click', (e) => {
-  const b = e.target.closest('button');
+  const b = e.target.closest('[data-toggle]');
   if (!b || b.disabled || room?.hostId !== myId) return;
-  const s = { ...room.settings };
-  if (b.dataset.toggle) s[b.dataset.toggle] = !s[b.dataset.toggle];
-  else if (b.dataset.delta) s[b.dataset.set] += Number(b.dataset.delta);
-  else if (b.dataset.val != null) s[b.dataset.set] = Number(b.dataset.val);
-  socket.emit('settings', s);
+  socket.emit('settings', { [b.dataset.toggle]: !room.settings[b.dataset.toggle] });
 });
 $('#playerList').addEventListener('click', (e) => {
   const b = e.target.closest('[data-kick]');
@@ -382,68 +384,86 @@ $('#copyBtn').addEventListener('click', async () => {
 });
 
 // ----- juego -----
-const currentRound = () => room.rounds[room.currentRound] || [];
-const myMatchIn = (round) => round.find((m) => m.p1 === myId || m.p2 === myId);
-
 function pickFeatured() {
-  const round = currentRound();
-  const playable = round.filter((m) => m.status !== 'bye');
-  const mine = myMatchIn(round);
+  const ms = roundMatches();
+  const mine = myMatch();
   if (mine?.status === 'playing') return mine;
-  return playable.find((m) => m.id === focusId)
-    || (mine?.status === 'done' ? mine : null)
-    || playable.find((m) => m.status === 'playing')
-    || playable[0]
-    || null;
+  return ms.find((m) => m.id === focusId) || mine || ms.find((m) => m.status === 'playing') || ms[0] || null;
 }
 
 function renderGame() {
   const isHost = room.hostId === myId;
+  const round = currentRound();
+  if (!isHost) projector = false;
   $('#roundTitle').textContent = room.state === 'finished' ? 'Torneo terminado' : roundLabel(room.currentRound);
-  $('#roundSub').textContent = `Sala ${room.code} · Ronda ${room.currentRound + 1} de ${room.totalRounds}`;
+  $('#roundSub').textContent = round ? `Sala ${room.code} · ${round.sticks} fósforos · se saca de 1 a ${round.maxTake}` : '';
+  $('#projBtn').hidden = !isHost;
+  $('#projBtn').textContent = projector ? '🎮 Vista normal' : '📽️ Proyector';
   $('#restartBtn').hidden = !isHost;
+  $('#game').classList.toggle('projector', projector);
 
-  const featured = pickFeatured();
   const used = new Set();
-  $('#stage').replaceChildren(...(featured ? [matchView(featured, false, used)] : []));
-  const others = currentRound().filter((m) => m.status !== 'bye' && m !== featured);
-  $('#others').hidden = others.length === 0;
-  $('.game-grid').classList.toggle('solo', others.length === 0);
-  $('#otherList').replaceChildren(...others.map((m) => matchView(m, true, used)));
+  if (projector) {
+    $('#stage').replaceChildren(...roundMatches().map((m) => matchView(m, 'proj', used)));
+    $('#others').hidden = true;
+    $('.game-grid').classList.add('solo');
+  } else {
+    const featured = pickFeatured();
+    $('#stage').replaceChildren(...(featured ? [matchView(featured, 'big', used)] : []));
+    const others = roundMatches().filter((m) => m !== featured);
+    $('#others').hidden = others.length === 0;
+    $('.game-grid').classList.toggle('solo', others.length === 0);
+    $('#otherList').replaceChildren(...others.map((m) => matchView(m, 'mini', used)));
+  }
   for (const k of [...views.keys()]) if (!used.has(k)) views.delete(k);
 
   renderBanner();
-  renderBracket(featured);
+  renderTeams();
+  renderHistory();
 
-  const mine = myMatchIn(currentRound());
-  const myTurn = room.state === 'playing' && mine?.status === 'playing' && mine.turn === myId;
-  if (myTurn && !wasMyTurn) sfxTurn();
-  wasMyTurn = myTurn;
-  document.title = myTurn ? '🔥 ¡Tu turno! · Fósforos' : `${roundLabel(room.currentRound)} · Fósforos`;
+  const mine = myMatch();
+  const mustVote = room.state === 'playing' && mine?.status === 'playing' && mine.vote
+    && mine.turn === mySide(mine) && mine.vote.votes?.[myId] == null;
+  if (mustVote && !wasMyTurn) sfxTurn();
+  wasMyTurn = !!mustVote;
+  document.title = mustVote ? '🗳️ ¡Votá! · Fósforos' : `${roundLabel(room.currentRound)} · Fósforos`;
 }
 
 function renderBanner() {
   const el = $('#banner');
   const me = P(myId);
-  const mine = myMatchIn(currentRound());
   let text = '';
   let kind = '';
   if (room.state === 'finished') {
-    text = room.championId ? `🏆 ${nameOf(room.championId)} ganó el torneo` : 'El torneo terminó';
+    const c = room.champion;
+    text = c ? `🏆 El ${teamName(c.captainId)} ganó el torneo (${plural(c.members.length, 'integrante', 'integrantes')})` : 'El torneo terminó';
     kind = 'gold';
-  } else if (!me || me.spectator) {
-    text = '👀 Estás mirando: entraste con el torneo ya empezado';
-  } else if (me.eliminated) {
-    text = '💀 Quedaste afuera del torneo. Podés seguir mirando las partidas.';
-    kind = 'out';
-  } else if (mine?.status === 'bye') {
-    text = '✨ Te tocó pase libre: avanzás directo a la próxima ronda';
-    kind = 'win';
-  } else if (mine?.status === 'playing') {
-    if (mine.turn === myId) { text = '🔥 ¡Es tu turno!'; kind = 'hot'; } else text = `⏳ Le toca a ${nameOf(mine.turn)}`;
-  } else if (mine?.status === 'done') {
-    text = '🎉 ¡Ganaste la partida! Esperando que terminen las demás…';
-    kind = 'win';
+  } else if (!me?.teamId) {
+    text = room.hostId === myId
+      ? (projector ? '📽️ Vista de proyector: todas las partidas de la ronda y quién está en posición ganadora según MIN-MAX'
+        : '📽️ Organizás el torneo: abrí la vista de proyector para ver todas las partidas')
+      : '👀 Estás mirando: el torneo ya había empezado cuando entraste';
+  } else {
+    const m = myMatch();
+    const my = m && mySide(m);
+    if (m?.status === 'playing') {
+      if (m.reveal) {
+        text = m.turn === my ? `🗳️ Tu equipo juega ${m.reveal.n}` : `${sideName(m, m.turn)} juega ${m.reveal.n}`;
+      } else if (m.turn === my) {
+        const voted = m.vote?.votes?.[myId];
+        const total = m.vote?.total ?? 0;
+        if (voted != null) text = total > 1 ? `✅ Votaste ${voted} · esperando al resto (${m.vote.voters.length}/${total})` : `✅ Elegiste ${voted}`;
+        else { text = total > 1 ? '🗳️ ¡Votá cuántos fósforos sacar!' : '🔥 ¡Es tu turno!'; kind = 'hot'; }
+      } else {
+        text = m.turn === MACHINE ? '🤖 La máquina está pensando…' : `⏳ Vota el ${sideName(m, m.turn)}`;
+      }
+    } else if (m?.status === 'done') {
+      if (m.winner === my) { text = '🎉 ¡Ganó tu equipo! Esperando que terminen las otras partidas…'; kind = 'win'; } else {
+        const t = room.teams.find((x) => x.id === me.teamId);
+        text = t && t.id !== my ? `🔁 Perdieron, pero siguen en carrera: ahora juegan en el ${teamName(t.captainId)}` : '🔁 Perdieron contra la máquina: al cerrar la ronda se suman a otro equipo';
+        kind = 'out';
+      }
+    }
   }
   if (room.nextRoundAt && room.state === 'playing') {
     const secs = Math.max(0, Math.ceil((room.nextRoundAt - now()) / 1000));
@@ -454,106 +474,151 @@ function renderBanner() {
   el.hidden = !text;
 }
 
-// Vista de una partida. Se reutiliza el DOM entre actualizaciones para poder animar los fósforos que se queman.
-function matchView(m, mini, used) {
-  const key = `${m.id}:${mini ? 'mini' : 'big'}`;
+// Vista de una partida ('big', 'proj' o 'mini'). Se reutiliza el DOM para animar los fósforos que se queman.
+function matchView(m, mode, used) {
+  const key = `${m.id}:${mode}`;
   used.add(key);
   let v = views.get(key);
   if (!v) {
     const el = document.createElement('div');
-    el.className = `match ${mini ? 'mini' : 'big'}`;
-    el.innerHTML = mini
+    el.className = `match ${mode === 'mini' ? 'mini' : 'big'} ${mode === 'proj' ? 'proj' : ''}`;
+    el.innerHTML = mode === 'mini'
       ? '<div class="mini-head"></div><div class="sticks"></div><div class="mini-done"></div>'
       : `<div class="mv-head"></div><div class="mv-timer"><i></i></div>
          <div class="mv-table"><div class="sticks"></div></div>
          <div class="mv-foot"></div><div class="mv-result"></div>`;
-    v = { el, mini, count: null, m };
+    v = { el, mode, count: null, m };
     views.set(key, v);
-    if (mini) el.addEventListener('click', () => { focusId = v.m.id; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
-    else bindPlay(v);
+    if (mode === 'mini') el.addEventListener('click', () => { focusId = v.m.id; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+    if (mode === 'big') bindPlay(v);
   }
   const changed = v.count !== null && v.count !== m.sticks;
   v.m = m;
   updateSticks(v, m);
-  if (mini) updateMini(v, m); else updateBig(v, m, changed);
+  if (mode === 'mini') updateMini(v, m); else updateBig(v, m, changed);
   return v.el;
 }
 
 function updateSticks(v, m) {
   const box = $('.sticks', v.el);
-  const shown = m.status === 'done' && m.sticks === 0 ? 0 : m.sticks;
+  const shown = m.sticks;
   if (v.count === null || shown > v.count) {
-    box.dataset.size = m.initial > 30 ? 's' : m.initial > 18 ? 'm' : 'l';
-    box.innerHTML = Array.from({ length: shown }, (_, i) => `<i class="stick" data-i="${i}" style="--d:${v.count === null ? i * 25 : 0}ms"></i>`).join('');
+    box.dataset.size = m.initial > 22 ? 's' : m.initial > 15 ? 'm' : 'l';
+    box.innerHTML = Array.from({ length: shown }, (_, i) => `<i class="stick" data-i="${i}" style="--d:${v.count === null ? i * 20 : 0}ms"></i>`).join('');
   } else if (shown < v.count) {
     const alive = [...box.querySelectorAll('.stick:not(.gone)')];
     alive.slice(shown).forEach((s, k) => {
-      s.classList.remove('sel');
+      s.classList.remove('sel', 'pick');
       s.style.animationDelay = `${k * 90}ms`;
       s.classList.add('gone');
       s.addEventListener('animationend', (e) => { if (e.target === s && e.animationName === 'burn') s.remove(); });
     });
-    if (!v.mini) sfxStrike();
+    if (v.mode === 'big') sfxStrike();
   }
   v.count = shown;
+  // F-20: mientras se muestra la jugada votada, se marcan los fósforos que se van a sacar
+  const alive = [...box.querySelectorAll('.stick:not(.gone)')];
+  const n = m.reveal?.n ?? 0;
+  alive.forEach((s, i) => s.classList.toggle('pick', n > 0 && i >= alive.length - n));
 }
 
-function sideHtml(m, pid, right) {
-  const p = P(pid);
-  const cls = [right ? 'right' : '', m.turn === pid ? 'turn' : '', m.winner === pid ? 'win' : '', m.loser === pid ? 'lose' : ''].join(' ');
-  const sub = pid === myId ? 'vos' : (p && !p.online ? 'desconectado' : (m.turn === pid ? 'pensando…' : ''));
-  return `<div class="side ${cls}">${avatar(p, 'lg')}<div><b>${esc(p?.name ?? '—')}</b><small>${sub}</small></div></div>`;
+function sideHtml(m, side, right) {
+  const machine = side === MACHINE;
+  const info = m.info[side];
+  const mine = mySide(m) === side;
+  const cls = [right ? 'right' : '', m.status === 'playing' && m.turn === side ? 'turn' : '',
+    m.winner === side ? 'win' : '', m.loser === side ? 'lose' : '', mine ? 'mine' : ''].join(' ');
+  const pic = machine ? '<span class="avatar lg machine">🤖</span>' : stack(info.members, 4, 'md');
+  const sub = machine ? 'juega con MIN-MAX' : `${plural(info.members.length, 'integrante', 'integrantes')}${mine ? ' · tu equipo' : ''}`;
+  return `<div class="side ${cls}" style="--team:${info.color}">${pic}<div><b>${esc(sideName(m, side))}</b><small>${sub}</small></div></div>`;
 }
 
-function reasonText(m) {
-  const loser = nameOf(m.loser);
-  if (m.reason === 'last') return `${loser} se quedó con el último fósforo`;
-  if (m.reason === 'disconnect') return `${loser} se desconectó`;
-  if (m.reason === 'left') return `${loser} abandonó el torneo`;
-  return '';
+function revealHtml(m) {
+  const r = m.reveal;
+  const sub = r.how === 'tiebreak' ? `Empate (${tallyText(r.tally)}): decidió la máquina con MIN-MAX`
+    : r.how === 'none' ? 'Nadie votó a tiempo: se saca 1'
+      : tallyText(r.tally);
+  return `<div class="reveal"><div class="rv-n">Se juega <b>${r.n}</b></div><div class="rv-sub">${esc(sub)}</div></div>`;
+}
+
+function lastMoveHtml(m) {
+  const lm = m.lastMove;
+  if (!lm) return '<div class="last-move">Nadie sacó todavía</div>';
+  const extra = lm.how === 'tiebreak' ? ' (desempate MIN-MAX)' : lm.how === 'none' ? ' (nadie votó)' : '';
+  return `<div class="last-move"><b>${esc(sideName(m, lm.by))}</b> sacó ${lm.took}${extra}</div>`;
+}
+
+function resultText(m) {
+  const winner = sideName(m, m.winner);
+  const loser = sideName(m, m.loser);
+  if (m.loser === MACHINE) return `${winner} le ganó a la máquina y sigue igual`;
+  if (m.winner === MACHINE) {
+    return m.absorbed
+      ? `La máquina le ganó: se sumaron al ${teamName(m.absorbed.intoCaptainId)}`
+      : 'La máquina le ganó: al cerrar la ronda se suman a un equipo al azar';
+  }
+  return `${loser} se suma al ${winner} (+${m.absorbed?.count ?? 0})`;
 }
 
 function updateBig(v, m, changed) {
-  const max = room.settings.maxTake;
-  const iPlay = m.p1 === myId || m.p2 === myId;
-  const myTurn = m.status === 'playing' && m.turn === myId;
-  v.el.classList.toggle('playable', myTurn);
+  const proj = v.mode === 'proj';
+  const my = mySide(m);
+  const canVote = !proj && m.status === 'playing' && m.vote && m.turn === my;
+  v.el.classList.toggle('playable', !!canVote);
 
   $('.mv-head', v.el).innerHTML = `
-    ${sideHtml(m, m.p1, false)}
-    <div class="center-count"><div class="count ${changed ? 'bump' : ''}">${m.sticks}</div><small>${m.sticks === 1 ? 'fósforo' : 'fósforos'}</small></div>
-    ${sideHtml(m, m.p2, true)}`;
+    ${sideHtml(m, m.a, false)}
+    <div class="center-count"><div class="count ${changed ? 'bump' : ''}">${m.sticks}</div><small>de 1 a ${m.maxTake}</small></div>
+    ${sideHtml(m, m.b, true)}`;
 
   const timer = $('.mv-timer', v.el);
-  timer.classList.toggle('on', !!m.turnDeadline);
-  timer.dataset.deadline = m.turnDeadline || '';
+  timer.classList.toggle('on', !!m.vote);
+  timer.dataset.deadline = m.vote?.deadline || '';
 
-  const last = m.lastMove
-    ? `<div class="last-move"><b>${esc(m.lastMove.by === myId ? 'Vos' : nameOf(m.lastMove.by))}</b> ${m.lastMove.by === myId ? 'sacaste' : 'sacó'} ${m.lastMove.took}${m.lastMove.auto ? ' (se le acabó el tiempo ⌛)' : ''}</div>`
-    : '<div class="last-move">Nadie sacó todavía</div>';
   let foot = '';
-  if (m.status === 'playing' && myTurn) {
-    const opts = Array.from({ length: Math.min(max, m.sticks) }, (_, i) => i + 1);
-    foot = `<div class="take-row">${opts.map((n) => `<button class="btn primary" data-take="${n}">Sacar ${n}</button>`).join('')}</div>
-            <div class="hint">También podés tocar los fósforos o usar las teclas ${opts.join(', ')}</div>`;
-  } else if (m.status === 'playing') {
-    foot = `<div class="waiting">${iPlay ? 'Esperando a' : 'Le toca a'} <b>${esc(nameOf(m.turn))}</b><span class="dots"></span></div>`;
+  if (m.status === 'playing') {
+    if (m.reveal) {
+      foot = revealHtml(m);
+    } else if (canVote) {
+      const votes = m.vote.votes || {};
+      const mine = votes[myId];
+      const opts = Array.from({ length: Math.min(m.maxTake, m.sticks) }, (_, i) => i + 1);
+      const votersFor = (n) => Object.keys(votes).filter((pid) => votes[pid] === n);
+      foot = `<div class="vote-row">${opts.map((n) => `
+        <button class="vote-btn ${mine === n ? 'on' : ''}" data-vote="${n}">
+          <span class="vn">${n}</span><span class="vl">${n === 1 ? 'fósforo' : 'fósforos'}</span>
+          <span class="vv">${stack(votersFor(n), 5, 'xs')}</span>
+        </button>`).join('')}</div>
+        <div class="hint">${m.vote.total > 1
+    ? `Votaron ${m.vote.voters.length} de ${m.vote.total}. Podés cambiar tu voto hasta que cierre.`
+    : 'Tocá un botón, los fósforos o las teclas del 1 al ' + opts.length}</div>`;
+    } else if (m.turn === MACHINE) {
+      foot = '<div class="waiting">🤖 La máquina está pensando<span class="dots"></span></div>';
+    } else {
+      foot = `<div class="waiting">Vota el <b>${esc(sideName(m, m.turn))}</b><span class="dots"></span>
+        <small>(${m.vote?.voters.length ?? 0}/${m.vote?.total ?? 0})</small></div>`;
+    }
+    if (proj && m.winningSide) {
+      // F-14: qué equipo está en posición ganadora según MIN-MAX
+      foot += `<div class="minmax" style="--team:${m.info[m.winningSide].color}">🧠 MIN-MAX: posición ganadora para <b>${esc(sideName(m, m.winningSide))}</b></div>`;
+    }
+    if (!m.reveal) foot += lastMoveHtml(m);
   }
-  $('.mv-foot', v.el).innerHTML = foot + (m.status === 'playing' ? last : '');
+  $('.mv-foot', v.el).innerHTML = foot;
 
   const res = $('.mv-result', v.el);
   if (m.status === 'done') {
-    const won = m.winner === myId;
-    const lost = m.loser === myId;
+    const won = my && m.winner === my;
+    const lost = my && m.loser === my;
     res.className = `mv-result on ${won ? 'won' : lost ? 'lost' : ''}`;
-    if (res.dataset.for !== m.id) {
-      res.dataset.for = m.id;
+    const key = `${m.id}:${m.absorbed ? 1 : 0}`;
+    if (res.dataset.for !== key) {
+      res.dataset.for = key;
       res.innerHTML = `<div>
-        <div class="big-emoji">${won ? '🏆' : lost ? '🔥' : '🎯'}</div>
-        <h3>${won ? '¡Ganaste!' : lost ? 'Perdiste' : `Gana ${esc(nameOf(m.winner))}`}</h3>
-        <p>${esc(reasonText(m))}</p>
-        ${lost ? '<p>Quedás afuera del torneo, pero podés seguir mirando 👀</p>' : ''}
-        ${won && room.state === 'playing' ? '<p>¡Pasás a la siguiente ronda!</p>' : ''}
+        <div class="big-emoji">${won ? '🏆' : lost ? '🔁' : '🎯'}</div>
+        <h3>${won ? '¡Ganó tu equipo!' : lost ? 'Perdió tu equipo' : `Gana ${esc(sideName(m, m.winner))}`}</h3>
+        <p>${esc(resultText(m))}</p>
+        ${lost ? '<p>No quedás afuera: seguís jugando con tu nuevo equipo 💪</p>' : ''}
       </div>`;
     }
   } else {
@@ -563,22 +628,24 @@ function updateBig(v, m, changed) {
 }
 
 function updateMini(v, m) {
-  const cls = (pid) => [m.turn === pid ? 'turn' : '', m.winner === pid ? 'win' : '', m.loser === pid ? 'lose' : ''].join(' ');
+  const cls = (side) => [m.status === 'playing' && m.turn === side ? 'turn' : '', m.winner === side ? 'win' : '', m.loser === side ? 'lose' : ''].join(' ');
+  const dot = (side) => `<span class="dot" style="--c:${m.info[side].color}"></span>`;
   $('.mini-head', v.el).innerHTML = `
-    ${avatar(P(m.p1), 'sm')}<span class="nm ${cls(m.p1)}">${esc(nameOf(m.p1))}</span>
+    ${dot(m.a)}<span class="nm ${cls(m.a)}">${esc(sideName(m, m.a))}</span>
     <span class="vs">${m.status === 'playing' ? m.sticks : 'vs'}</span>
-    <span class="nm r ${cls(m.p2)}">${esc(nameOf(m.p2))}</span>${avatar(P(m.p2), 'sm')}`;
-  $('.mini-done', v.el).textContent = m.status === 'done' ? `🏆 ${nameOf(m.winner)} — ${reasonText(m)}` : '';
+    <span class="nm r ${cls(m.b)}">${esc(sideName(m, m.b))}</span>${dot(m.b)}`;
+  $('.mini-done', v.el).textContent = m.status === 'done' ? `🏆 ${resultText(m)}`
+    : m.reveal ? `${sideName(m, m.turn)} juega ${m.reveal.n}` : '';
 }
 
-// interacción con los fósforos: pasar el mouse selecciona, click saca
+// pasar el mouse marca, click vota
 function bindPlay(v) {
   let pointer = 'mouse';
-  const canPlay = () => v.m.status === 'playing' && v.m.turn === myId;
-  const takeFor = (i) => {
-    if (!canPlay()) return 0;
+  const canVote = () => v.m.status === 'playing' && v.m.vote && v.m.turn === mySide(v.m);
+  const voteFor = (i) => {
+    if (!canVote()) return 0;
     const n = v.m.sticks - i;
-    return n >= 1 && n <= room.settings.maxTake ? n : 0;
+    return n >= 1 && n <= v.m.maxTake ? n : 0;
   };
   const highlight = (n) => {
     const alive = [...v.el.querySelectorAll('.stick:not(.gone)')];
@@ -586,9 +653,9 @@ function bindPlay(v) {
   };
   const amountAt = (target) => {
     const st = target.closest('.stick:not(.gone)');
-    if (st) return { n: takeFor(Number(st.dataset.i)), st };
-    const b = target.closest('[data-take]');
-    return { n: b && canPlay() ? Number(b.dataset.take) : 0, st: null };
+    if (st) return { n: voteFor(Number(st.dataset.i)), st };
+    const b = target.closest('[data-vote]');
+    return { n: b && canVote() ? Number(b.dataset.vote) : 0, st: null };
   };
   v.el.addEventListener('pointerdown', (e) => { pointer = e.pointerType; });
   v.el.addEventListener('mouseover', (e) => { if (pointer === 'mouse') highlight(amountAt(e.target).n); });
@@ -596,75 +663,75 @@ function bindPlay(v) {
   v.el.addEventListener('click', (e) => {
     const { n, st } = amountAt(e.target);
     if (!n) return;
-    // en pantallas táctiles el primer toque marca y el segundo confirma
+    // en pantallas táctiles el primer toque sobre un fósforo marca y el segundo confirma
     if (st && pointer !== 'mouse' && !st.classList.contains('sel')) { highlight(n); return; }
-    socket.emit('take', n);
+    highlight(0);
+    socket.emit('vote', n);
   });
 }
 
 document.addEventListener('keydown', (e) => {
   if (!room || room.state !== 'playing' || e.target.matches('input')) return;
   const n = Number(e.key);
-  const mine = myMatchIn(currentRound());
-  if (mine?.status === 'playing' && mine.turn === myId && n >= 1 && n <= room.settings.maxTake && n <= mine.sticks) {
-    socket.emit('take', n);
+  const m = myMatch();
+  if (m?.status === 'playing' && m.vote && m.turn === mySide(m) && n >= 1 && n <= Math.min(m.maxTake, m.sticks)) {
+    socket.emit('vote', n);
   }
 });
 
-// ----- llave -----
-function renderBracket(featured) {
-  const r0 = room.rounds[0] || [];
-  let alive = r0.reduce((n, m) => n + (m.p2 ? 2 : 1), 0);
-  const row = (m, pid) => {
-    if (!pid) return '<div class="b-row bye"><span class="avatar ghost sm">–</span><span class="nm">pase libre</span></div>';
-    const cls = [m.winner === pid && m.status !== 'playing' ? 'win' : '', m.loser === pid ? 'lose' : '', pid === myId ? 'me' : ''].join(' ');
-    const badge = m.status === 'playing' && m.turn === pid ? '<span class="badge">●</span>' : (m.winner === pid && m.status === 'done' ? '<span class="badge">✓</span>' : '');
-    return `<div class="b-row ${cls}">${avatar(P(pid), 'sm')}<span class="nm">${esc(nameOf(pid))}</span>${badge}</div>`;
-  };
-  const placeholder = '<div class="b-match pending"><div class="b-row"><span class="avatar ghost sm">?</span><span class="nm">—</span></div><div class="b-row"><span class="avatar ghost sm">?</span><span class="nm">—</span></div></div>';
-  const cols = [];
-  for (let r = 0; r < room.totalRounds; r++) {
-    const count = Math.ceil(alive / 2);
-    alive = count;
-    const ms = room.rounds[r];
-    const body = ms
-      ? ms.map((m) => {
-        const clickable = r === room.currentRound && m.status !== 'bye';
-        return `<div class="b-match ${m.status} ${clickable ? 'clickable' : ''} ${featured?.id === m.id ? 'focus' : ''}" ${clickable ? `data-mid="${m.id}"` : ''}>
-          ${row(m, m.p1)}${row(m, m.p2)}</div>`;
-      }).join('')
-      : placeholder.repeat(count);
-    cols.push(`<div class="b-col"><div class="b-title">${roundLabel(r)}</div><div class="b-list">${body}</div></div>`);
-  }
-  const champ = P(room.championId);
-  cols.push(`<div class="b-col"><div class="b-title">Campeón</div><div class="b-list">
-    <div class="b-champ">${champ ? `${avatar(champ, 'lg')}<span>${esc(champ.name)}</span>` : '<span class="cup">🏆</span><span class="muted">¿Quién será?</span>'}</div>
-  </div></div>`);
-  $('#bracket').innerHTML = cols.join('');
-}
-$('#bracket').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-mid]');
-  if (!b) return;
-  focusId = b.dataset.mid;
+$('#projBtn').addEventListener('click', () => {
+  projector = !projector;
   render();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
 });
+
+// ----- equipos e historial -----
+function renderTeams() {
+  const teams = [...room.teams].sort((x, y) => y.members.length - x.members.length);
+  const total = teams.reduce((n, t) => n + t.members.length, 0) || 1;
+  const mine = P(myId)?.teamId;
+  $('#teamCount').textContent = teams.length;
+  $('#teams').innerHTML = teams.map((t) => `
+    <div class="team ${t.id === mine ? 'mine' : ''}">
+      <div class="team-top">
+        <span class="dot" style="--c:${t.color}"></span>
+        <b>${esc(teamName(t.captainId))}</b>
+        ${t.id === mine ? '<span class="tag">tu equipo</span>' : ''}
+        <span class="cnt">${t.members.length}</span>
+      </div>
+      <div class="bar"><i style="width:${(t.members.length / total) * 100}%;background:${t.color}"></i></div>
+      <div class="team-members">${stack(t.members, 14, 'xs')}</div>
+    </div>`).join('');
+}
+
+function renderHistory() {
+  $('#history').innerHTML = room.rounds.map((round, i) => `
+    <div class="h-round">
+      <div class="h-title">${roundLabel(i)} · ${round.sticks} fósforos, de 1 a ${round.maxTake}</div>
+      ${round.matches.map((m) => (m.status === 'done'
+    ? `<div class="h-line">🏆 <b>${esc(sideName(m, m.winner))}</b> le ganó ${m.loser === MACHINE ? 'a la máquina' : `al ${esc(sideName(m, m.loser))}`}
+            <small>${esc(resultText(m))}</small></div>`
+    : `<div class="h-line live">● ${esc(sideName(m, m.a))} vs ${esc(sideName(m, m.b))} <small>quedan ${m.sticks}</small></div>`)).join('')}
+    </div>`).reverse().join('');
+}
 
 $('#restartBtn').addEventListener('click', () => {
-  if (room.state === 'finished' || confirm('¿Cortar el torneo y volver a la sala de espera?')) socket.emit('restart');
+  if (room.state === 'finished' || confirm('¿Cortar el torneo y volver a la inscripción?')) socket.emit('restart');
 });
 
 // ----- campeón -----
 function showChampion() {
   const key = `${room.code}:${room.tournamentNo}`;
-  const champ = P(room.championId);
-  const isMe = room.championId === myId;
-  $('#champAvatar').innerHTML = champ ? avatar(champ, 'xl') : '';
-  $('#champName').textContent = champ ? (isMe ? '¡Ganaste el torneo!' : champ.name) : 'Torneo terminado';
-  $('#champSub').textContent = champ ? (isMe ? 'Nadie te pudo dejar con el último fósforo 🔥' : 'es quien ganó el torneo 🔥') : 'No quedó nadie en pie';
+  const c = room.champion;
+  const isMine = c?.members.includes(myId);
+  $('#champMembers').innerHTML = c ? c.members.map((id) => {
+    const p = P(id);
+    return p ? `<div class="cm">${avatar(p, 'md')}<span>${esc(p.name)}</span></div>` : '';
+  }).join('') : '';
+  $('#champName').textContent = c ? (isMine ? '¡Tu equipo es campeón!' : teamName(c.captainId)) : 'Torneo terminado';
+  $('#champSub').textContent = c ? `${teamName(c.captainId)} · ${plural(c.members.length, 'integrante', 'integrantes')}` : '';
   const isHost = room.hostId === myId;
   $('#againBtn').hidden = !isHost;
-  $('#champHint').textContent = isHost ? '' : `${nameOf(room.hostId)} puede arrancar otra ronda`;
+  $('#champHint').textContent = isHost ? '' : `${nameOf(room.hostId)} puede arrancar otro torneo`;
   if (championDismissed !== key) $('#champion').classList.remove('hidden');
   if (championShown !== key) {
     championShown = key;
@@ -711,11 +778,9 @@ function confetti() {
 // ----- relojes -----
 setInterval(() => {
   if (!room || room.state !== 'playing') return;
-  const total = room.settings.turnSeconds * 1000;
   for (const t of document.querySelectorAll('.mv-timer.on')) {
     const left = Number(t.dataset.deadline) - now();
-    const frac = total ? Math.max(0, Math.min(1, left / total)) : 0;
-    t.firstElementChild.style.transform = `scaleX(${frac})`;
+    t.firstElementChild.style.transform = `scaleX(${Math.max(0, Math.min(1, left / VOTE_MS))})`;
     t.classList.toggle('low', left < 5000);
   }
   if (room.nextRoundAt) renderBanner();
