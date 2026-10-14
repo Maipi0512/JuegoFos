@@ -1,5 +1,7 @@
 'use strict';
-const socket = io();
+// Conexión directa por WebSocket: en hostings con proxy (como Render) el sondeo HTTP inicial
+// puede responder 400 "Session ID unknown". Si el WebSocket está bloqueado, se intenta con sondeo.
+const socket = io({ transports: ['websocket', 'polling'], tryAllTransports: true });
 const $ = (s, el = document) => el.querySelector(s);
 
 const store = {
