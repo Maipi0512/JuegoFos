@@ -1,0 +1,18 @@
+{
+  "name": "juego-fosforos",
+  "version": "1.0.0",
+  "description": "Torneo multijugador del juego de los fósforos: el que se queda con el último, pierde.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.22.3",
+    "socket.io": "^4.8.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
